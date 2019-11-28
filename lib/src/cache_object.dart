@@ -5,7 +5,7 @@
 // HINT: Unnecessary import. Future and Stream are available via dart:core.
 import 'dart:async';
 
-import 'package:sqflite/sqflite.dart';
+import 'package:idb_shim/idb.dart';
 
 final String tableCacheObject = "cacheObject";
 
@@ -42,48 +42,48 @@ class CacheObject {
       columnValidTill: validTill?.millisecondsSinceEpoch ?? 0,
       columnTouched: DateTime.now().millisecondsSinceEpoch
     };
-    if (id != null) {
-      map[columnId] = id;
-    }
     return map;
   }
 
-  CacheObject.fromMap(Map<String, dynamic> map) {
-    id = map[columnId];
+  CacheObject.fromMap(int id, Map map) {
+    this.id = id;
     url = map[columnUrl];
     relativePath = map[columnPath];
     validTill = DateTime.fromMillisecondsSinceEpoch(map[columnValidTill]);
     eTag = map[columnETag];
   }
-
-  static List<CacheObject> fromMapList(List<Map<String, dynamic>> list) {
-    var objects = new List<CacheObject>();
-    for (var map in list) {
-      objects.add(CacheObject.fromMap(map));
-    }
-    return objects;
-  }
 }
 
 class CacheObjectProvider {
+  final IdbFactory idbFactory;
   Database db;
   String path;
 
-  CacheObjectProvider(this.path);
+  CacheObjectProvider(this.idbFactory, this.path);
 
   Future open() async {
-    db = await openDatabase(path, version: 1,
-        onCreate: (Database db, int version) async {
+    db = await idbFactory.open(path, version: 2, onUpgradeNeeded: (e) async {
+      var db = e.database;
+      if (e.oldVersion < e.newVersion) {
+        try {
+          db.deleteObjectStore(tableCacheObject);
+        } catch (_) {}
+        var store = db.createObjectStore(tableCacheObject, autoIncrement: true);
+        store.createIndex(columnUrl, columnUrl);
+      }
+      /*
       await db.execute('''
-      create table $tableCacheObject ( 
-        $columnId integer primary key, 
-        $columnUrl text, 
+      create table $tableCacheObject (
+        $columnId integer primary key,
+        $columnUrl text,
         $columnPath text,
         $columnETag text,
         $columnValidTill integer,
         $columnTouched integer
         )
       ''');
+
+       */
     });
   }
 
@@ -95,65 +95,85 @@ class CacheObjectProvider {
     }
   }
 
+  Transaction get _writeTransaction {
+    return db.transaction(tableCacheObject, idbModeReadWrite);
+  }
+
+  ObjectStore get _writeStore {
+    return _writeTransaction.objectStore(tableCacheObject);
+  }
+
+  Transaction get _readTransaction {
+    return db.transaction(tableCacheObject, idbModeReadOnly);
+  }
+
+  ObjectStore get _readStore {
+    return _readTransaction.objectStore(tableCacheObject);
+  }
+
+  Index get _byUrlIndex {
+    return _readStore.index(columnUrl);
+  }
+
   Future<CacheObject> insert(CacheObject cacheObject) async {
-    cacheObject.id = await db.insert(tableCacheObject, cacheObject.toMap());
+    cacheObject.id = await _writeStore.add(cacheObject.toMap());
     return cacheObject;
   }
 
   Future<CacheObject> get(String url) async {
-    List<Map> maps = await db.query(tableCacheObject,
-        columns: null, where: "$columnUrl = ?", whereArgs: [url]);
-    if (maps.length > 0) {
-      return new CacheObject.fromMap(maps.first);
+    var index = _byUrlIndex;
+    var first = await index.get(url);
+    if (first is Map) {
+      return new CacheObject.fromMap((await index.getKey(url)) as int, first);
     }
     return null;
   }
 
   Future<int> delete(int id) async {
-    return await db
-        .delete(tableCacheObject, where: "$columnId = ?", whereArgs: [id]);
+    return await _writeStore.delete(id);
   }
 
   Future deleteAll(Iterable<int> ids) async {
-    return await db.delete(tableCacheObject,
-        where: "$columnId IN (" + ids.join(",") + ")");
+    var store = _writeStore;
+    for (int id in ids) {
+      await store.delete(id);
+    }
   }
 
   Future<int> update(CacheObject cacheObject) async {
-    return await db.update(tableCacheObject, cacheObject.toMap(),
-        where: "$columnId = ?", whereArgs: [cacheObject.id]);
+    return await _writeStore.put(cacheObject.toMap(), cacheObject.id);
   }
 
   Future<List<CacheObject>> getAllObjects() async {
-    List<Map> maps = await db.query(tableCacheObject, columns: null);
-    return CacheObject.fromMapList(maps);
+    var cacheObjects = <CacheObject>[];
+    _writeStore.openCursor(autoAdvance: true).listen((data) {
+      var value = data.value;
+      if (value is Map) {
+        cacheObjects.add(CacheObject.fromMap(data.key, value));
+      }
+    });
+    return cacheObjects;
   }
 
   Future<List<CacheObject>> getObjectsOverCapacity(int capacity) async {
-    List<Map> maps = await db.query(tableCacheObject,
-        columns: null,
-        orderBy: "$columnTouched DESC",
-        where: "$columnTouched < ?",
-        whereArgs: [
-          DateTime.now().subtract(new Duration(days: 1)).millisecondsSinceEpoch
-        ],
-        limit: 100,
-        offset: capacity);
-
-    return CacheObject.fromMapList(maps);
+    return await getOldObjects(Duration(days: 1));
   }
 
   Future<List<CacheObject>> getOldObjects(Duration maxAge) async {
-    List<Map<String, dynamic>> maps = await db.query(
-      tableCacheObject,
-      where: "$columnTouched < ?",
-      columns: null,
-      whereArgs: [DateTime.now().subtract(maxAge).millisecondsSinceEpoch],
-      limit: 100,
-    );
-
-    return CacheObject.fromMapList(maps);
+    var cacheObjects = <CacheObject>[];
+    var date = DateTime.now().subtract(maxAge).millisecondsSinceEpoch;
+    _writeStore.openCursor(autoAdvance: true).listen((data) {
+      var value = data.value;
+      if (cacheObjects.length < 100) {
+        if (value is Map) {
+          if (value[columnTouched] as int < date) {
+            cacheObjects.add(CacheObject.fromMap(data.key, value));
+          }
+        }
+      }
+    });
+    return cacheObjects;
   }
 
-  Future close() async => await db.close();
+  Future close() async => db.close();
 }

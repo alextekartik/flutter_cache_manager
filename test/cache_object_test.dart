@@ -1,7 +1,5 @@
-import 'dart:io';
-
 import 'package:flutter_cache_manager/src/cache_object.dart';
-import 'package:path/path.dart' as p;
+import 'package:idb_shim/idb_client_memory.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -24,12 +22,15 @@ void main() {
 
 Future<CacheObjectProvider> getDbProvider() async {
   var storeKey = 'test';
-
+  var path = "$storeKey.db";
+  /*
   var databasesPath = await Directory.systemTemp.createTemp();
   var path = p.join(databasesPath.path, "$storeKey.db");
 
   try {
     await Directory(databasesPath.path).create(recursive: true);
   } catch (_) {}
-  return new CacheObjectProvider(path);
+
+   */
+  return new CacheObjectProvider(idbFactoryMemory, path);
 }

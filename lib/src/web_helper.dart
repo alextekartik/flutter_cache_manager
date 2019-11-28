@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import 'package:fs_shim/fs.dart';
 
 import 'package:flutter_cache_manager/src/cache_object.dart';
 import 'package:flutter_cache_manager/src/cache_store.dart';
@@ -7,7 +7,10 @@ import 'package:flutter_cache_manager/src/file_fetcher.dart';
 import 'package:flutter_cache_manager/src/file_info.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
+import 'package:tekartik_common_utils/common_utils_import.dart';
 import 'package:uuid/uuid.dart';
+
+import 'image_fetcher.dart';
 
 ///Flutter Cache Manager
 ///Copyright (c) 2019 Rene Floor
@@ -24,6 +27,8 @@ class WebHelper {
       _fileFetcher = _defaultHttpGetter;
     }
   }
+
+  FileSystem get fs => _store.fs;
 
   ///Download the file from the url
   Future<FileInfo> downloadFile(String url,
@@ -65,20 +70,30 @@ class WebHelper {
     }
 
     var success = false;
+    FileFetcherResponse response;
+    try {
+      response = await _fileFetcher(url, headers: headers);
 
-    var response = await _fileFetcher(url, headers: headers);
-    success = await _handleHttpResponse(response, cacheObject);
+      success = await _handleHttpResponse(response, cacheObject);
+    } catch (e) {
+      // if can be image
+      print('failure trying web image fetcher');
+      if (imageFetcher != null) {
+        response = await imageFetcher(url);
+        success = await _handleHttpResponse(response, cacheObject);
+      }
+    }
 
     if (!success) {
-      throw HttpException(
+      throw Exception(
           "No valid statuscode. Statuscode was ${response?.statusCode}");
     }
 
     _store.putFile(cacheObject);
     var filePath = p.join(await _store.filePath, cacheObject.relativePath);
 
-    return FileInfo(
-        new File(filePath), FileSource.Online, cacheObject.validTill, url);
+    return FileInfo(_store.fs.file(filePath), FileSource.Online,
+        cacheObject.validTill, url);
   }
 
   Future<FileFetcherResponse> _defaultHttpGetter(String url,
@@ -94,11 +109,11 @@ class WebHelper {
       _setDataFromHeaders(cacheObject, response);
       var path = p.join(basePath, cacheObject.relativePath);
 
-      var folder = new File(path).parent;
+      var folder = fs.file(path).parent;
       if (!(await folder.exists())) {
-        folder.createSync(recursive: true);
+        await folder.create(recursive: true);
       }
-      await new File(path).writeAsBytes(response.bodyBytes);
+      await fs.file(path).writeAsBytes(response.bodyBytes);
       return true;
     }
     if (response.statusCode == 304) {
@@ -153,7 +168,7 @@ class WebHelper {
 
   _removeOldFile(String relativePath) async {
     var path = p.join(await _store.filePath, relativePath);
-    var file = new File(path);
+    var file = fs.file(path);
     if (await file.exists()) {
       await file.delete();
     }

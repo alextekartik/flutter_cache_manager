@@ -1,16 +1,20 @@
 import 'dart:async';
-import 'dart:io';
+import 'package:fs_shim/fs.dart';
 
 import 'package:flutter_cache_manager/src/cache_object.dart';
 import 'package:flutter_cache_manager/src/file_info.dart';
+import 'package:idb_shim/idb.dart';
 import 'package:path/path.dart' as p;
-import 'package:sqflite/sqflite.dart';
+import 'package:tekartik_common_utils/common_utils_import.dart';
 
 ///Flutter Cache Manager
 ///Copyright (c) 2019 Rene Floor
 ///Released under MIT License.
 
 class CacheStore {
+  final FileSystem fs;
+  final IdbFactory idbFactory;
+
   Map<String, Future<CacheObject>> _futureCache = new Map();
   Map<String, CacheObject> _memCache = new Map();
 
@@ -27,8 +31,8 @@ class CacheStore {
   static const Duration cleanupRunMinInterval = Duration(seconds: 10);
   Timer _scheduledCleanup;
 
-  CacheStore(
-      Future<String> basePath, this.storeKey, this._capacity, this._maxAge) {
+  CacheStore(this.fs, this.idbFactory, Future<String> basePath, this.storeKey,
+      this._capacity, this._maxAge) {
     filePath = basePath;
     basePath.then((p) => _filePath = p);
 
@@ -36,14 +40,9 @@ class CacheStore {
   }
 
   Future<CacheObjectProvider> _getObjectProvider() async {
-    var databasesPath = await getDatabasesPath();
-    var path = p.join(databasesPath, "$storeKey.db");
+    var path = "$storeKey.db";
 
-    // Make sure the directory exists
-    try {
-      await Directory(databasesPath).create(recursive: true);
-    } catch (_) {}
-    final provider = CacheObjectProvider(path);
+    final provider = CacheObjectProvider(idbFactory, path);
     await provider.open();
     return provider;
   }
@@ -55,7 +54,7 @@ class CacheStore {
     }
     var path = p.join(await filePath, cacheObject.relativePath);
     return new FileInfo(
-        File(path), FileSource.Cache, cacheObject.validTill, url);
+        fs.file(path), FileSource.Cache, cacheObject.validTill, url);
   }
 
   putFile(CacheObject cacheObject) async {
@@ -94,14 +93,14 @@ class CacheStore {
 
     var path = p.join(_filePath, cacheObject.relativePath);
     return new FileInfo(
-        File(path), FileSource.Cache, cacheObject.validTill, url);
+        fs.file(path), FileSource.Cache, cacheObject.validTill, url);
   }
 
   Future<bool> _fileExists(CacheObject cacheObject) async {
     if (cacheObject?.relativePath == null) {
       return false;
     }
-    return new File(p.join(await filePath, cacheObject.relativePath)).exists();
+    return fs.file(p.join(await filePath, cacheObject.relativePath)).exists();
   }
 
   Future<CacheObject> _getCacheDataFromDatabase(String url) async {
@@ -173,7 +172,7 @@ class CacheStore {
       if (_futureCache.containsKey(cacheObject.url))
         _futureCache.remove(cacheObject.url);
     }
-    var file = new File(p.join(await filePath, cacheObject.relativePath));
+    var file = fs.file(p.join(await filePath, cacheObject.relativePath));
     if (await file.exists()) {
       file.delete();
     }

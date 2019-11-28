@@ -1,16 +1,15 @@
 // HINT: Unnecessary import. Future and Stream are available via dart:core.
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
-
+import 'package:idb_shim/idb.dart';
+import 'package:meta/meta.dart';
 import 'package:flutter_cache_manager/src/cache_object.dart';
 import 'package:flutter_cache_manager/src/cache_store.dart';
 import 'package:flutter_cache_manager/src/file_fetcher.dart';
 import 'package:flutter_cache_manager/src/file_info.dart';
 import 'package:flutter_cache_manager/src/web_helper.dart';
-import 'package:http/http.dart';
+import 'package:fs_shim/fs.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 ///Flutter Cache Manager
@@ -18,29 +17,47 @@ import 'package:uuid/uuid.dart';
 ///Released under MIT License.
 
 class DefaultCacheManager extends BaseCacheManager {
+  final String path;
   static const key = "libCachedImageData";
 
   static DefaultCacheManager _instance;
 
+  factory DefaultCacheManager.create(
+          {@required FileSystem fs,
+          @required IdbFactory idbFactory,
+          @required String path}) =>
+      DefaultCacheManager(fs: fs, idbFactory: idbFactory, path: path);
+
   /// The DefaultCacheManager that can be easily used directly. The code of
   /// this implementation can be used as inspiration for more complex cache
   /// managers.
-  factory DefaultCacheManager() {
+  ///
+  /// [tmpPath] is a directory name
+  factory DefaultCacheManager(
+      {FileSystem fs, IdbFactory idbFactory, String path}) {
     if (_instance == null) {
-      _instance = new DefaultCacheManager._();
+      assert(fs != null,
+          "DefaultCacheManager should have been initialized before with a proper FileSystem to use");
+      assert(path != null,
+          "DefaultCacheManager should have been initialized before with a proper path to use");
+      assert(idbFactory != null,
+          "DefaultCacheManager should have been initialized before with a proper idbFactory to use");
+      _instance = new DefaultCacheManager._(fs, idbFactory, path);
     }
     return _instance;
   }
 
-  DefaultCacheManager._() : super(key);
+  DefaultCacheManager._(FileSystem fs, IdbFactory idbFactory, this.path)
+      : super(fs, idbFactory, key);
 
   Future<String> getFilePath() async {
-    var directory = await getTemporaryDirectory();
-    return p.join(directory.path, key);
+    return p.join(path, key);
   }
 }
 
 abstract class BaseCacheManager {
+  final FileSystem fs;
+  final IdbFactory idbFactory;
   Future<String> _fileBasePath;
 
   /// Creates a new instance of a cache manager. This can be used to retrieve
@@ -54,7 +71,7 @@ abstract class BaseCacheManager {
   /// files the files that haven't been used longest will be removed.
   /// The [httpGetter] can be used to customize how files are downloaded. For example
   /// to edit the urls, add headers or use a proxy.
-  BaseCacheManager(this._cacheKey,
+  BaseCacheManager(this.fs, this.idbFactory, this._cacheKey,
       {Duration maxAgeCacheObject = const Duration(days: 30),
       int maxNrOfCacheObjects = 200,
       FileFetcher fileFetcher}) {
@@ -62,8 +79,8 @@ abstract class BaseCacheManager {
 
     _maxAgeCacheObject = maxAgeCacheObject;
     _maxNrOfCacheObjects = maxNrOfCacheObjects;
-    _store = new CacheStore(
-        _fileBasePath, _cacheKey, _maxNrOfCacheObjects, _maxAgeCacheObject);
+    _store = new CacheStore(fs, idbFactory, _fileBasePath, _cacheKey,
+        _maxNrOfCacheObjects, _maxAgeCacheObject);
     _webHelper = new WebHelper(_store, fileFetcher);
   }
 
@@ -179,11 +196,11 @@ abstract class BaseCacheManager {
     cacheObject.eTag = eTag;
 
     var path = p.join(await getFilePath(), cacheObject.relativePath);
-    var folder = new File(path).parent;
+    var folder = fs.file(path).parent;
     if (!(await folder.exists())) {
-      folder.createSync(recursive: true);
+      await folder.create(recursive: true);
     }
-    var file = await new File(path).writeAsBytes(fileBytes);
+    var file = await fs.file(path).writeAsBytes(fileBytes);
 
     _store.putFile(cacheObject);
 

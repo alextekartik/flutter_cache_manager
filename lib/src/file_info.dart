@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:fs_shim/fs.dart';
 
 ///Flutter Cache Manager
 ///Copyright (c) 2019 Rene Floor
